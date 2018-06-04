@@ -2,6 +2,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Control.Monad.Validation where
 
@@ -15,10 +17,14 @@ import Data.Aeson
 import Data.Foldable as F
 import Data.List as L
 import Data.Map.Strict as M
-import Data.Monoid
+import Data.Monoid hiding ((<>))
+import Data.Semigroup
 import Data.Text as T
 import Data.Vector as V
 import Test.QuickCheck
+
+-- | For compatibility reasons
+type Monoid' v = (Monoid v, Semigroup v)
 
 -- | Collects all throwed "warnings" throwed through StateT and "errors" throwed
 -- through ExceptT to single value using Monoid
@@ -47,9 +53,12 @@ instance (Ord k) => Ixed (MonoidMap k v) where
 instance (Ord k) => At (MonoidMap k v) where
   at key = _MonoidMap . at key
 
-instance (Ord k, Monoid v) => Monoid (MonoidMap k v) where
+instance (Ord k, Semigroup v) => Monoid (MonoidMap k v) where
   mempty = MonoidMap M.empty
-  mappend (MonoidMap a) (MonoidMap b) =
+  mappend = (<>)
+
+instance (Ord k, Semigroup v) => Semigroup (MonoidMap k v) where
+  MonoidMap a <> MonoidMap b =
     MonoidMap $ M.unionWith (<>) a b
 
 instance (ToJSON k, ToJSON v) => ToJSON (MonoidMap k v) where
@@ -72,7 +81,7 @@ instance (Ord k, FromJSON k, FromJSON v) => FromJSON (MonoidMap k v) where
 
 -- | Convenient for 'vZoom' as first artument. Will prevent generation
 -- of map with 'mempty' values
-mmSingleton :: (Eq v, Monoid v, Ord k) => k -> v -> MonoidMap k v
+mmSingleton :: (Eq v, Monoid' v, Ord k) => k -> v -> MonoidMap k v
 mmSingleton k = memptyWrap mempty $ MonoidMap . M.singleton k
 
 -- | Set given value to 'mempty'
@@ -99,7 +108,7 @@ textErrors = neConcat (\a b -> a <> ", " <> b)
 -- | Returns `mempty` instead of error if no warnings was occured. So, your
 -- error should have `Eq` instance to detect that any error was occured. Returns
 -- Nothing for second element of tuple if compuration was interruped by 'vError'
-runValidationT :: (Monoid e, Monad m) => ValidationT e m a -> m (e, Maybe a)
+runValidationT :: (Monoid' e, Monad m) => ValidationT e m a -> m (e, Maybe a)
 runValidationT (ValidationT m) = do
   (res, warnings) <- runStateT (runExceptT m) mempty
   return $ case res of
@@ -107,7 +116,7 @@ runValidationT (ValidationT m) = do
     Right a  -> (warnings, Just a)
 
 runValidationTEither
-  :: (Monoid e, Eq e, Monad m)
+  :: (Monoid' e, Eq e, Monad m)
   => ValidationT e m a
   -> m (Either e a)
 runValidationTEither action = do
@@ -117,7 +126,7 @@ runValidationTEither action = do
     _                      -> Left err
 
 handleValidationT
-  :: (Monoid e, Monad m, Eq e)
+  :: (Monoid' e, Monad m, Eq e)
   => (e -> m a)
   -> ValidationT e m a
   -> m a
@@ -129,17 +138,17 @@ vError :: (Monad m) => e -> ValidationT e m a
 vError e = ValidationT $ throwError e
 
 -- | Does not stop further execution, append warning to
-vWarning :: (Monad m, Monoid e) => e -> ValidationT e m ()
+vWarning :: (Monad m, Monoid' e) => e -> ValidationT e m ()
 vWarning e = ValidationT $ modify' (<> e)
 
-vErrorL :: (Monad m, Monoid e) => ASetter' e a -> a -> ValidationT e m x
+vErrorL :: (Monad m, Monoid' e) => ASetter' e a -> a -> ValidationT e m x
 vErrorL l a = vError $ setMempty l a
 
-vWarningL :: (Monad m, Monoid e) => ASetter' e a -> a -> ValidationT e m ()
+vWarningL :: (Monad m, Monoid' e) => ASetter' e a -> a -> ValidationT e m ()
 vWarningL l a = vWarning $ setMempty l a
 
 vZoom
-  :: (Monad m, Monoid a, Monoid b)
+  :: (Monad m, Monoid' a, Monoid' b)
   => (a -> b)
   -> ValidationT a m x
   -> ValidationT b m x
@@ -150,7 +159,7 @@ vZoom up action = do
     Just a  -> vWarning (up err) *> return a
 
 vZoomL
-  :: (Monad m, Monoid a, Monoid b)
+  :: (Monad m, Monoid' a, Monoid' b)
   => ASetter' b a
   -> ValidationT a m x
   -> ValidationT b m x
